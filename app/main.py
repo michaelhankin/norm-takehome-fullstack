@@ -1,9 +1,16 @@
 from fastapi import FastAPI, Query
-from app.utils import Output
+from .utils import DocumentService, QdrantService
 
 app = FastAPI()
+doc_service = DocumentService()
+docs = doc_service.create_documents()
+llm_service = QdrantService()
+llm_service.connect()
+llm_service.load(docs)
 
-"""
-Please create an endpoint that accepts a query string, e.g., "what happens if I steal 
-from the Sept?" and returns a JSON response serialized from the Pydantic Output class.
-"""
+@app.get("/ask")
+def ask(
+    query: str = Query(...)
+):
+    output = llm_service.query(query)
+    return output
