@@ -2,6 +2,10 @@
 node_modules/
 npm-debug.log
 
+# Python
+.venv/
+__pycache__/
+
 # Logs
 logs/
 *.log
@@ -10,6 +14,7 @@ yarn-error.log*
 
 # Environment variables
 .env
+.envrc
 
 # Build directories
 dist/

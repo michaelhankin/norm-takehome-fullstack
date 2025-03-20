@@ -1,15 +1,20 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import qdrant_client
 from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.embeddings import OpenAIEmbedding
-from llama_index.llms import OpenAI
-from llama_index.schema import Document
-from llama_index import (
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.openai import OpenAI
+from llama_index.core.schema import Document
+from llama_index.core import (
     VectorStoreIndex,
-    ServiceContext,
+    Settings
 )
+from llama_index.core.node_parser import JSONNodeParser
+from llama_index.core.query_engine import CitationQueryEngine
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.readers.file import PDFReader
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 key = os.environ['OPENAI_API_KEY']
 
@@ -18,106 +23,107 @@ class Input:
     query: str
     file_path: str
 
-@dataclass
-class Citation:
-    source: str
-    text: str
+class Law(BaseModel):
+    """
+    A representation of a law, with its number, text, and subclauses.
+    """
+    
+    number: str = Field(
+        description="The number associated with the law (e.g. 1, 2.3, 1.1.2, 4.3.1.1, etc.)"
+    )
+    text: str = Field(description="The text of the law (e.g. 'Widows' or 'Trials of the Crown')")
+    subclauses: list["Law"] = Field(
+        description=("The subclauses of the law. This is based on how the laws are laid out in the source text "\
+                     "(e.g. generally 1.1 is a subclause of 1, etc.)")
+    )
+
+class Laws(BaseModel):
+    """
+    Represents a list of top-level laws, with their nested laws linked as subclauses.
+    """
+
+    laws: list[Law] = Field(
+        description="The list of top-level laws, with their nested laws linked as subclauses."
+    )
+
+class Citation(BaseModel):
+    """
+    Represents a citation of a law.
+    """
+
+    number: str = Field(
+        description="The number of the law that's being cited (e.g. 1.1, 2.3.2, etc.)."
+    )
+    text: str = Field(
+        description="The text of the law being cited."
+    )
 
 class Output(BaseModel):
-    query: str
-    response: str
-    citations: list[Citation]
+    """
+    The output to a query, including the laws that were cited.
+
+    The citations should only appear in the 'citations' list, not inline in the 'response'.
+    """
+
+    query: str = Field(
+        description="The input query."
+    )
+    response: str = Field(
+        description="The response to the query."
+    )
+    citations: list[Citation] = Field(
+        description="The list of laws that informed the response."
+    )
+
 
 class DocumentService:
-
-    """
-    Update this service to load the pdf and extract its contents.
-    The example code below will help with the data structured required
-    when using the QdrantService.load() method below. Note: for this
-    exercise, ignore the subtle difference between llama-index's 
-    Document and Node classes (i.e, treat them as interchangeable).
-
-    # example code
-    def create_documents() -> list[Document]:
-
-        docs = [
+    def create_documents(self) -> list[Document]:
+        pdf_reader = PDFReader()
+        pages = pdf_reader.load_data(file=Path("./docs/laws.pdf"))
+        text = "\n".join([doc.text for doc in pages])
+        sllm = OpenAI(model="gpt-4o").as_structured_llm(Laws)
+        laws: Laws = sllm.complete(text).raw
+        parsed_docs = [
             Document(
-                metadata={"Section": "Law 1"},
-                text="Theft is punishable by hanging",
-            ),
-            Document(
-                metadata={"Section": "Law 2"},
-                text="Tax evasion is punishable by banishment.",
-            ),
+                text=law.model_dump_json()
+            )
+            for law in laws.laws
         ]
-
-        return docs
-
-     """
+        return parsed_docs
 
 class QdrantService:
     def __init__(self, k: int = 2):
         self.index = None
         self.k = k
+        Settings.embed_model = OpenAIEmbedding()
+        self.sllm = OpenAI(
+            model="gpt-4o"
+        ).as_structured_llm(Output)
     
     def connect(self) -> None:
         client = qdrant_client.QdrantClient(location=":memory:")
                 
         vstore = QdrantVectorStore(client=client, collection_name='temp')
 
-        service_context = ServiceContext.from_defaults(
-            embed_model=OpenAIEmbedding(),
-            llm=OpenAI(api_key=key, model="gpt-4")
-            )
-
         self.index = VectorStoreIndex.from_vector_store(
             vector_store=vstore, 
-            service_context=service_context
-            )
+        )
 
-    def load(self, docs = list[Document]):
-        self.index.insert_nodes(docs)
+    def load(self, docs: list[Document]):
+        parser = JSONNodeParser()
+        nodes = parser.get_nodes_from_documents(docs)
+        self.index.insert_nodes(nodes)
     
     def query(self, query_str: str) -> Output:
-
-        """
-        This method needs to initialize the query engine, run the query, and return
-        the result as a pydantic Output class. This is what will be returned as
-        JSON via the FastAPI endpount. Fee free to do this however you'd like, but
-        a its worth noting that the llama-index package has a CitationQueryEngine...
-
-        Also, be sure to make use of self.k (the number of vectors to return based
-        on semantic similarity).
-
-        # Example output object
-        citations = [
-            Citation(source="Law 1", text="Theft is punishable by hanging"),
-            Citation(source="Law 2", text="Tax evasion is punishable by banishment."),
-        ]
-
-        output = Output(
-            query=query_str, 
-            response=response_text, 
-            citations=citations
-            )
-        
+        retriever = VectorIndexRetriever(
+            index=self.index,
+            similarity_top_k=self.k
+        )
+        query_engine = CitationQueryEngine(
+            retriever=retriever,
+            llm=self.sllm
+        )
+        response = query_engine.query(query_str)
+        output = response.response
         return output
-
-        """
        
-
-if __name__ == "__main__":
-    # Example workflow
-    doc_serivce = DocumentService() # implemented
-    docs = doc_serivce.create_documents() # NOT implemented
-
-    index = QdrantService() # implemented
-    index.connect() # implemented
-    index.load() # implemented
-
-    index.query("what happens if I steal?") # NOT implemented
-
-
-
-
-

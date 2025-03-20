@@ -1,0 +1,16 @@
+[project]
+name = "norm-takehome-fullstack"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]>=0.115.11",
+    "llama-index>=0.12.24",
+    "llama-index-embeddings-openai>=0.3.1",
+    "llama-index-readers-file>=0.4.6",
+    "llama-index-vector-stores-qdrant>=0.4.3",
+    "pydantic>=2.10.6",
+    "pypdf>=5.4.0",
+    "qdrant-client>=1.13.3",
+]
